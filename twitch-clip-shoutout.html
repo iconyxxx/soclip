@@ -95,25 +95,21 @@
             box-shadow: 0 4px 20px rgba(145, 71, 255, 0.4);
         }
 
-        .clip-badge:hover {
-            background: linear-gradient(135deg, #a970ff 0%, #7d5bbe 100%);
-            border-color: rgba(255, 255, 255, 0.5);
-        }
-
         #debug {
             position: fixed;
             bottom: 10px;
             left: 10px;
-            background: rgba(0, 0, 0, 0.9);
+            background: rgba(0, 0, 0, 0.95);
             color: #0f0;
-            padding: 10px;
-            font-family: monospace;
-            font-size: 12px;
-            max-width: 500px;
-            max-height: 200px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-width: 600px;
+            max-height: 300px;
             overflow-y: auto;
             border-radius: 8px;
-            display: none;
+            border: 2px solid #0f0;
+            display: block;
             z-index: 10000;
         }
     </style>
@@ -123,207 +119,191 @@
         <div class="clip-shell">
             <div class="clip-player" id="player"></div>
             <div class="clip-footer">
-                <a id="badge" class="clip-badge" href="#" target="_blank" rel="noreferrer"></a>
+                <a id="badge" class="clip-badge" href="#" target="_blank">Waiting for clip...</a>
             </div>
         </div>
     </div>
-    <div id="debug"></div>
+    <div id="debug">Loading...</div>
 
-    <script src="https://cdn.jsdelivr.net/npm/tmi.js@1.8.5/dist/tmi.min.js"></script>
     <script>
-        // ========== CONFIGURATION - EDIT THESE ==========
-        const CONFIG = {
-            channel: 'iconyx_',              // Your Twitch channel name
-            modsCanTrigger: true,           // Can mods use the command?
-            alwaysPlayTopClip: false,       // Always play most viewed clip (true) or random (false)
-            debugMode: true,                // Show debug console
-            clipDuration: 30                // Default clip duration in seconds
-        };
-        // ================================================
+        // ========== CONFIGURATION ==========
+        const CHANNEL = 'iconyx_';  // ← CHANGE THIS TO YOUR TWITCH USERNAME
+        const MODS_CAN_TRIGGER = true;
+        const ALWAYS_TOP_CLIP = false;
+        const CLIP_DURATION = 30;
+        // ====================================
 
-        let currentClip = null;
-        let endTimer = null;
-        let unmountTimer = null;
-
+        const debugEl = document.getElementById('debug');
         const overlayEl = document.getElementById('overlay');
         const playerEl = document.getElementById('player');
         const badgeEl = document.getElementById('badge');
-        const debugEl = document.getElementById('debug');
 
-        // Debug logging
+        let unmountTimer = null;
+        let endTimer = null;
+
         function log(msg) {
-            console.log('[CLIP]', msg);
-            if (CONFIG.debugMode && debugEl) {
-                debugEl.style.display = 'block';
-                const time = new Date().toLocaleTimeString();
-                debugEl.innerHTML += `[${time}] ${msg}<br>`;
-                debugEl.scrollTop = debugEl.scrollHeight;
-            }
+            const time = new Date().toLocaleTimeString();
+            const line = `[${time}] ${msg}`;
+            console.log(line);
+            debugEl.innerHTML += line + '<br>';
+            debugEl.scrollTop = debugEl.scrollHeight;
         }
 
-        // Show overlay
         function fadeIn() {
             if (unmountTimer) clearTimeout(unmountTimer);
             overlayEl.classList.add('visible');
-            log('Overlay shown');
         }
 
-        // Hide overlay
         function fadeOut() {
             overlayEl.classList.remove('visible');
-            log('Overlay hidden');
             unmountTimer = setTimeout(() => {
                 playerEl.innerHTML = '';
             }, 350);
         }
 
-        // Play a clip
-        function playClip(clipData, channelName) {
-            log(`Playing: ${clipData.title || clipData.slug}`);
+        function playClip(clipSlug, channelName, title) {
+            log(`▶️ Playing: ${title || clipSlug}`);
             
-            currentClip = clipData;
-
-            // Build embed URL
-            const embedUrl = `https://clips.twitch.tv/embed?clip=${clipData.slug}&parent=${window.location.hostname}&autoplay=true&muted=false`;
-
-            // Create iframe
-            playerEl.innerHTML = '';
-            const iframe = document.createElement('iframe');
-            iframe.src = embedUrl;
-            iframe.allow = 'autoplay; fullscreen; picture-in-picture';
-            iframe.allowFullscreen = true;
-            iframe.style.width = '100%';
-            iframe.style.height = '100%';
-            iframe.style.border = '0';
-            playerEl.appendChild(iframe);
-
-            // Update badge
+            const embedUrl = `https://clips.twitch.tv/embed?clip=${clipSlug}&parent=${window.location.hostname}&autoplay=true&muted=false`;
+            
+            playerEl.innerHTML = `<iframe src="${embedUrl}" allow="autoplay; fullscreen" allowfullscreen style="width:100%;height:100%;border:0"></iframe>`;
+            
             badgeEl.href = `https://twitch.tv/${channelName}`;
-            badgeEl.textContent = `${channelName} — ${clipData.title || 'Clip'}`;
-
-            // Show overlay
+            badgeEl.textContent = `${channelName} — ${title || 'Clip'}`;
+            
             fadeIn();
-
-            // Auto-hide after clip duration
+            
             if (endTimer) clearTimeout(endTimer);
-            const duration = (clipData.duration || CONFIG.clipDuration) * 1000 + 1000;
             endTimer = setTimeout(() => {
                 fadeOut();
-                currentClip = null;
-            }, duration);
+                log('⏹️ Clip ended');
+            }, CLIP_DURATION * 1000 + 1000);
         }
 
-        // Fetch clips from DecAPI
         async function fetchClips(username) {
-            log(`Fetching clips for ${username}...`);
+            log(`🔍 Fetching clips for ${username}...`);
             
             try {
-                const url = `https://decapi.me/twitch/clips/${username}?limit=20`;
-                const response = await fetch(url);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-
+                const response = await fetch(`https://decapi.me/twitch/clips/${username}?limit=20`);
                 const text = await response.text();
+                
+                log(`📡 API Response: ${text.substring(0, 50)}...`);
                 
                 if (!text || text.includes('error') || text === 'No clips found') {
                     throw new Error('No clips found');
                 }
-
-                // DecAPI returns comma-separated clip slugs
+                
                 const slugs = text.split(',').map(s => s.trim()).filter(Boolean);
+                log(`✅ Found ${slugs.length} clips`);
+                return slugs;
                 
-                if (slugs.length === 0) {
-                    throw new Error('No clips available');
-                }
-
-                log(`✓ Found ${slugs.length} clips`);
-                
-                return slugs.map(slug => ({
-                    slug: slug,
-                    title: 'Clip',
-                    duration: CONFIG.clipDuration
-                }));
-
             } catch (err) {
-                log(`✗ Failed to fetch clips: ${err.message}`);
-                return null;
+                log(`❌ Fetch error: ${err.message}`);
+                return [];
             }
         }
 
-        // Pick random clip
         function pickRandom(arr) {
             return arr[Math.floor(Math.random() * arr.length)];
         }
 
-        // Initialize TMI client
-        log('Initializing...');
-        log(`Channel: ${CONFIG.channel}`);
+        // Initialize
+        log('═══════════════════════════════');
+        log('🚀 Widget Starting...');
+        log(`📺 Channel: ${CHANNEL}`);
+        log(`🔧 Mods can trigger: ${MODS_CAN_TRIGGER}`);
+        log('═══════════════════════════════');
 
-        const client = new tmi.Client({
-            connection: {
-                secure: true,
-                reconnect: true
-            },
-            channels: [CONFIG.channel.toLowerCase()]
-        });
+        // Load TMI.js dynamically
+        log('📦 Loading TMI.js library...');
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/tmi.js@1.8.5/dist/tmi.min.js';
+        script.onload = function() {
+            log('✅ TMI.js loaded successfully');
+            initializeTMI();
+        };
+        script.onerror = function() {
+            log('❌ FAILED to load TMI.js!');
+            log('⚠️ Check your internet connection');
+        };
+        document.head.appendChild(script);
 
-        client.connect().catch(err => {
-            log(`✗ Connection error: ${err.message}`);
-        });
-
-        client.on('connected', () => {
-            log(`✓ Connected to ${CONFIG.channel}'s chat`);
-        });
-
-        client.on('message', async (channel, tags, message, self) => {
-            if (self) return;
-
-            const parts = message.trim().split(/\s+/);
-            const command = parts[0].toLowerCase();
-
-            // Check if it's the !soclip command
-            if (command !== '!soclip') return;
-
-            // Check permissions
-            const username = (tags.username || '').toLowerCase();
-            const isBroadcaster = tags.badges?.broadcaster === '1' || username === CONFIG.channel.toLowerCase();
-            const isMod = tags.mod === true || tags.badges?.moderator === '1';
-            const canTrigger = isBroadcaster || (CONFIG.modsCanTrigger && isMod);
-
-            log(`!soclip from ${username} (broadcaster: ${isBroadcaster}, mod: ${isMod})`);
-
-            if (!canTrigger) {
-                log('✗ Permission denied');
-                return;
-            }
-
-            // Get target username
-            const targetUser = parts[1];
-            if (!targetUser) {
-                log('✗ No username provided');
-                return;
-            }
-
-            // Fetch and play clip
+        function initializeTMI() {
             try {
-                const clips = await fetchClips(targetUser);
+                log('🔌 Connecting to Twitch IRC...');
                 
-                if (!clips || clips.length === 0) {
-                    log(`✗ No clips for ${targetUser}`);
-                    return;
-                }
+                const client = new tmi.Client({
+                    connection: {
+                        secure: true,
+                        reconnect: true
+                    },
+                    channels: [CHANNEL.toLowerCase()]
+                });
 
-                const chosen = CONFIG.alwaysPlayTopClip ? clips[0] : pickRandom(clips);
-                playClip(chosen, targetUser);
+                client.on('connecting', () => {
+                    log('⏳ Connecting...');
+                });
 
+                client.on('connected', (address, port) => {
+                    log(`✅ Connected to ${address}:${port}`);
+                    log(`✅ Joined #${CHANNEL}`);
+                    log('🎉 READY! Use !soclip <username> in chat');
+                });
+
+                client.on('disconnected', (reason) => {
+                    log(`❌ Disconnected: ${reason}`);
+                });
+
+                client.on('message', async (channel, tags, message, self) => {
+                    if (self) return;
+                    
+                    log(`💬 ${tags.username}: ${message}`);
+                    
+                    const parts = message.trim().split(/\s+/);
+                    if (parts[0].toLowerCase() !== '!soclip') return;
+                    
+                    log('🎬 !soclip command detected!');
+                    
+                    const username = (tags.username || '').toLowerCase();
+                    const isBroadcaster = tags.badges?.broadcaster === '1' || username === CHANNEL.toLowerCase();
+                    const isMod = tags.mod === true || tags.badges?.moderator === '1';
+                    const canTrigger = isBroadcaster || (MODS_CAN_TRIGGER && isMod);
+                    
+                    log(`👤 User: ${username} | Broadcaster: ${isBroadcaster} | Mod: ${isMod}`);
+                    
+                    if (!canTrigger) {
+                        log('⛔ Permission denied');
+                        return;
+                    }
+                    
+                    const targetUser = parts[1];
+                    if (!targetUser) {
+                        log('⚠️ No username provided');
+                        return;
+                    }
+                    
+                    log(`🎯 Target: ${targetUser}`);
+                    
+                    const clips = await fetchClips(targetUser);
+                    
+                    if (clips.length === 0) {
+                        log('❌ No clips available');
+                        return;
+                    }
+                    
+                    const chosen = ALWAYS_TOP_CLIP ? clips[0] : pickRandom(clips);
+                    playClip(chosen, targetUser, 'Clip');
+                });
+
+                client.connect().catch(err => {
+                    log(`❌ Connection error: ${err.message}`);
+                });
+                
             } catch (err) {
-                log(`✗ Error: ${err.message}`);
+                log(`❌ FATAL ERROR: ${err.message}`);
+                log(`Stack: ${err.stack}`);
             }
-        });
-
-        log('Widget ready! Use !soclip <username> in chat');
+        }
     </script>
 </body>
 </html>
