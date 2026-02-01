@@ -181,27 +181,89 @@
             }, CLIP_DURATION * 1000 + 1000);
         }
 
-        async function fetchClips(username) {
-            log(`🔍 Fetching clips for ${username}...`);
-            
+        async function fetchClipsFromDecAPI(username) {
+            log(`🔍 [DecAPI] Trying for ${username}...`);
             try {
                 const response = await fetch(`https://decapi.me/twitch/clips/${username}?limit=20`);
                 const text = await response.text();
                 
-                log(`📡 Response: ${text.substring(0, 50)}...`);
-                
-                if (!text || text.includes('error') || text === 'No clips found') {
-                    throw new Error('No clips found');
+                if (!response.ok || text.includes('404') || text.includes('error') || text === 'No clips found') {
+                    throw new Error('DecAPI failed');
                 }
                 
                 const slugs = text.split(',').map(s => s.trim()).filter(Boolean);
-                log(`✅ Found ${slugs.length} clips`);
-                return slugs;
-                
+                if (slugs.length > 0) {
+                    log(`✅ [DecAPI] Found ${slugs.length} clips`);
+                    return slugs;
+                }
+                throw new Error('No clips');
             } catch (err) {
-                log(`❌ Fetch error: ${err.message}`);
-                return [];
+                log(`❌ [DecAPI] Failed: ${err.message}`);
+                return null;
             }
+        }
+
+        async function fetchClipsFromIVR(username) {
+            log(`🔍 [IVR] Trying for ${username}...`);
+            try {
+                const response = await fetch(`https://api.ivr.fi/v2/twitch/user/${username}/clips`);
+                if (!response.ok) throw new Error('IVR API error');
+                
+                const data = await response.json();
+                if (data && data.clips && data.clips.length > 0) {
+                    const slugs = data.clips.map(c => c.slug).filter(Boolean);
+                    log(`✅ [IVR] Found ${slugs.length} clips`);
+                    return slugs;
+                }
+                throw new Error('No clips');
+            } catch (err) {
+                log(`❌ [IVR] Failed: ${err.message}`);
+                return null;
+            }
+        }
+
+        async function fetchClipsFromTwitchTracker(username) {
+            log(`🔍 [TwitchTracker] Trying for ${username}...`);
+            try {
+                // This is a workaround - gets recent popular clips
+                const response = await fetch(`https://twitchtracker.com/${username}/clips`);
+                const html = await response.text();
+                
+                // Parse clip slugs from HTML
+                const regex = /clips\.twitch\.tv\/([A-Za-z0-9_-]+)/g;
+                const matches = [...html.matchAll(regex)];
+                const slugs = [...new Set(matches.map(m => m[1]))].slice(0, 20);
+                
+                if (slugs.length > 0) {
+                    log(`✅ [TwitchTracker] Found ${slugs.length} clips`);
+                    return slugs;
+                }
+                throw new Error('No clips');
+            } catch (err) {
+                log(`❌ [TwitchTracker] Failed: ${err.message}`);
+                return null;
+            }
+        }
+
+        async function fetchClips(username) {
+            log(`🔍 Starting clip search for ${username}...`);
+            
+            // Try APIs in order until one works
+            const apis = [
+                fetchClipsFromIVR,
+                fetchClipsFromDecAPI,
+                fetchClipsFromTwitchTracker
+            ];
+            
+            for (const api of apis) {
+                const clips = await api(username);
+                if (clips && clips.length > 0) {
+                    return clips;
+                }
+            }
+            
+            log(`❌ All APIs failed - no clips found for ${username}`);
+            return [];
         }
 
         function pickRandom(arr) {
