@@ -123,7 +123,7 @@
             </div>
         </div>
     </div>
-    <div id="debug">Loading...</div>
+    <div id="debug">Initializing...</div>
 
     <script>
         // ========== CONFIGURATION ==========
@@ -138,6 +138,7 @@
         const playerEl = document.getElementById('player');
         const badgeEl = document.getElementById('badge');
 
+        let ws = null;
         let unmountTimer = null;
         let endTimer = null;
 
@@ -187,7 +188,7 @@
                 const response = await fetch(`https://decapi.me/twitch/clips/${username}?limit=20`);
                 const text = await response.text();
                 
-                log(`📡 API Response: ${text.substring(0, 50)}...`);
+                log(`📡 Response: ${text.substring(0, 50)}...`);
                 
                 if (!text || text.includes('error') || text === 'No clips found') {
                     throw new Error('No clips found');
@@ -207,103 +208,156 @@
             return arr[Math.floor(Math.random() * arr.length)];
         }
 
-        // Initialize
-        log('═══════════════════════════════');
-        log('🚀 Widget Starting...');
-        log(`📺 Channel: ${CHANNEL}`);
-        log(`🔧 Mods can trigger: ${MODS_CAN_TRIGGER}`);
-        log('═══════════════════════════════');
+        function parseTwitchMessage(rawMessage) {
+            const parsed = {
+                raw: rawMessage,
+                tags: {},
+                prefix: null,
+                command: null,
+                params: []
+            };
 
-        // Load TMI.js dynamically
-        log('📦 Loading TMI.js library...');
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/tmi.js@1.8.5/dist/tmi.min.js';
-        script.onload = function() {
-            log('✅ TMI.js loaded successfully');
-            initializeTMI();
-        };
-        script.onerror = function() {
-            log('❌ FAILED to load TMI.js!');
-            log('⚠️ Check your internet connection');
-        };
-        document.head.appendChild(script);
+            let position = 0;
 
-        function initializeTMI() {
-            try {
-                log('🔌 Connecting to Twitch IRC...');
-                
-                const client = new tmi.Client({
-                    connection: {
-                        secure: true,
-                        reconnect: true
-                    },
-                    channels: [CHANNEL.toLowerCase()]
+            // Parse tags
+            if (rawMessage[0] === '@') {
+                const nextSpace = rawMessage.indexOf(' ');
+                const tagsRaw = rawMessage.slice(1, nextSpace);
+                tagsRaw.split(';').forEach(tag => {
+                    const [key, value] = tag.split('=');
+                    parsed.tags[key] = value;
                 });
-
-                client.on('connecting', () => {
-                    log('⏳ Connecting...');
-                });
-
-                client.on('connected', (address, port) => {
-                    log(`✅ Connected to ${address}:${port}`);
-                    log(`✅ Joined #${CHANNEL}`);
-                    log('🎉 READY! Use !soclip <username> in chat');
-                });
-
-                client.on('disconnected', (reason) => {
-                    log(`❌ Disconnected: ${reason}`);
-                });
-
-                client.on('message', async (channel, tags, message, self) => {
-                    if (self) return;
-                    
-                    log(`💬 ${tags.username}: ${message}`);
-                    
-                    const parts = message.trim().split(/\s+/);
-                    if (parts[0].toLowerCase() !== '!soclip') return;
-                    
-                    log('🎬 !soclip command detected!');
-                    
-                    const username = (tags.username || '').toLowerCase();
-                    const isBroadcaster = tags.badges?.broadcaster === '1' || username === CHANNEL.toLowerCase();
-                    const isMod = tags.mod === true || tags.badges?.moderator === '1';
-                    const canTrigger = isBroadcaster || (MODS_CAN_TRIGGER && isMod);
-                    
-                    log(`👤 User: ${username} | Broadcaster: ${isBroadcaster} | Mod: ${isMod}`);
-                    
-                    if (!canTrigger) {
-                        log('⛔ Permission denied');
-                        return;
-                    }
-                    
-                    const targetUser = parts[1];
-                    if (!targetUser) {
-                        log('⚠️ No username provided');
-                        return;
-                    }
-                    
-                    log(`🎯 Target: ${targetUser}`);
-                    
-                    const clips = await fetchClips(targetUser);
-                    
-                    if (clips.length === 0) {
-                        log('❌ No clips available');
-                        return;
-                    }
-                    
-                    const chosen = ALWAYS_TOP_CLIP ? clips[0] : pickRandom(clips);
-                    playClip(chosen, targetUser, 'Clip');
-                });
-
-                client.connect().catch(err => {
-                    log(`❌ Connection error: ${err.message}`);
-                });
-                
-            } catch (err) {
-                log(`❌ FATAL ERROR: ${err.message}`);
-                log(`Stack: ${err.stack}`);
+                position = nextSpace + 1;
             }
+
+            // Parse prefix
+            if (rawMessage[position] === ':') {
+                const nextSpace = rawMessage.indexOf(' ', position);
+                parsed.prefix = rawMessage.slice(position + 1, nextSpace);
+                position = nextSpace + 1;
+            }
+
+            // Parse command
+            const nextSpace = rawMessage.indexOf(' ', position);
+            if (nextSpace === -1) {
+                parsed.command = rawMessage.slice(position);
+                return parsed;
+            }
+
+            parsed.command = rawMessage.slice(position, nextSpace);
+            position = nextSpace + 1;
+
+            // Parse params
+            if (rawMessage[position] === ':') {
+                parsed.params.push(rawMessage.slice(position + 1));
+            } else {
+                const parts = rawMessage.slice(position).split(' :');
+                const params = parts[0].split(' ');
+                parsed.params.push(...params);
+                if (parts.length > 1) {
+                    parsed.params.push(parts.slice(1).join(' :'));
+                }
+            }
+
+            return parsed;
         }
+
+        function connectToTwitch() {
+            log('═══════════════════════════════');
+            log('🚀 Widget Starting...');
+            log(`📺 Channel: ${CHANNEL}`);
+            log(`🔧 Mods can trigger: ${MODS_CAN_TRIGGER}`);
+            log('═══════════════════════════════');
+            log('🔌 Connecting to Twitch IRC via WebSocket...');
+
+            ws = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
+
+            ws.onopen = () => {
+                log('✅ WebSocket connected!');
+                log('📤 Sending authentication...');
+                
+                // Anonymous login (no oauth needed for read-only)
+                ws.send('CAP REQ :twitch.tv/tags twitch.tv/commands');
+                ws.send('PASS SCHMOOPIIE');
+                ws.send(`NICK justinfan${Math.floor(Math.random() * 99999)}`);
+                ws.send(`JOIN #${CHANNEL.toLowerCase()}`);
+                
+                log(`✅ Joined #${CHANNEL}`);
+                log('🎉 READY! Use !soclip <username> in chat');
+            };
+
+            ws.onmessage = (event) => {
+                const lines = event.data.split('\r\n');
+                
+                lines.forEach(line => {
+                    if (!line) return;
+                    
+                    // Respond to PING
+                    if (line.startsWith('PING')) {
+                        ws.send('PONG :tmi.twitch.tv');
+                        return;
+                    }
+
+                    // Parse message
+                    const parsed = parseTwitchMessage(line);
+                    
+                    if (parsed.command === 'PRIVMSG') {
+                        const username = parsed.tags['display-name'] || parsed.prefix.split('!')[0];
+                        const message = parsed.params[parsed.params.length - 1];
+                        
+                        log(`💬 ${username}: ${message}`);
+                        
+                        const parts = message.trim().split(/\s+/);
+                        if (parts[0].toLowerCase() !== '!soclip') return;
+                        
+                        log('🎬 !soclip command detected!');
+                        
+                        const badges = parsed.tags['badges'] || '';
+                        const isBroadcaster = badges.includes('broadcaster');
+                        const isMod = badges.includes('moderator') || parsed.tags['mod'] === '1';
+                        const canTrigger = isBroadcaster || (MODS_CAN_TRIGGER && isMod);
+                        
+                        log(`👤 User: ${username} | Broadcaster: ${isBroadcaster} | Mod: ${isMod}`);
+                        
+                        if (!canTrigger) {
+                            log('⛔ Permission denied');
+                            return;
+                        }
+                        
+                        const targetUser = parts[1];
+                        if (!targetUser) {
+                            log('⚠️ No username provided');
+                            return;
+                        }
+                        
+                        log(`🎯 Target: ${targetUser}`);
+                        
+                        fetchClips(targetUser).then(clips => {
+                            if (clips.length === 0) {
+                                log('❌ No clips available');
+                                return;
+                            }
+                            
+                            const chosen = ALWAYS_TOP_CLIP ? clips[0] : pickRandom(clips);
+                            playClip(chosen, targetUser, 'Clip');
+                        });
+                    }
+                });
+            };
+
+            ws.onerror = (error) => {
+                log(`❌ WebSocket error: ${error}`);
+            };
+
+            ws.onclose = () => {
+                log('❌ Disconnected from Twitch');
+                log('⟳ Reconnecting in 5 seconds...');
+                setTimeout(connectToTwitch, 5000);
+            };
+        }
+
+        // Start connection
+        connectToTwitch();
     </script>
 </body>
 </html>
